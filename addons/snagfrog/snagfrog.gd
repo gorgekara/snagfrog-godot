@@ -4,18 +4,28 @@ extends Node
 ## Call SnagFrog.report() (or press the hotkey) to stage a screenshot, the tail of the
 ## log file and diagnostics on SnagFrog, then open the report page in the browser. The
 ## player reviews and confirms there; nothing is submitted until they do.
+##
+## If the previous session did not exit cleanly, reports also carry that session's log and
+## are marked as a crash; see crashed_last_session.
 
 signal report_opened(url: String)
 signal report_failed(error: String)
+## Emitted once after startup when the previous session did not exit cleanly (a crash, a
+## freeze the player force-quit, or a power loss). Connect to offer the player a report.
+signal crashed_last_session
 
 const MAX_LOG_BYTES := 256 * 1024
 const MAX_SCREENSHOT_BYTES := 3 * 1024 * 1024
 const MAX_EDGE := 1920
 const TIMEOUT_SECONDS := 15.0
+const MARKER_PATH := "user://snagfrog_session.marker"
 
 var _context: Dictionary = {}
 var _busy := false
 var _hotkey: int = KEY_NONE
+var _crashed_last_session := false
+var _previous_log := ""
+var _previous_log_time := 0
 
 
 func _ready() -> void:
@@ -24,6 +34,77 @@ func _ready() -> void:
 	var hotkey := str(_setting("hotkey", "F9")).strip_edges()
 	if not hotkey.is_empty():
 		_hotkey = OS.find_keycode_from_string(hotkey)
+	_start_session_marker()
+
+
+## True when the previous session did not exit cleanly. Reports sent in this session then
+## carry the previous session's log and are marked as a crash.
+func has_crashed_last_session() -> bool:
+	return _crashed_last_session
+
+
+# A marker file is written at startup and removed on a clean exit. Finding it at the next
+# startup means the last session ended unexpectedly.
+func _start_session_marker() -> void:
+	if not _detects_crashes():
+		return
+	if FileAccess.file_exists(MARKER_PATH):
+		# A second copy of the game started while the first is running also lands here; Godot
+		# cannot tell whether another process is alive, so that rare case reads as a crash.
+		_crashed_last_session = true
+		_previous_log = _find_previous_log()
+		if not _previous_log.is_empty():
+			_previous_log_time = FileAccess.get_modified_time(_previous_log)
+		crashed_last_session.emit.call_deferred()
+	var f := FileAccess.open(MARKER_PATH, FileAccess.WRITE)
+	if f != null:
+		f.store_string(str(OS.get_process_id()))
+		f.close()
+
+
+func _detects_crashes() -> bool:
+	if Engine.is_editor_hint() or OS.has_feature("web") or not bool(_setting("detect_crashes", true)):
+		return false
+	# Stopping a game from the editor kills it, which would look like a crash on the next run.
+	return not OS.has_feature("editor") or OS.get_environment("SNAGFROG_DETECT_CRASHES") == "1"
+
+
+func _end_session_marker() -> void:
+	if not FileAccess.file_exists(MARKER_PATH):
+		return
+	if int(FileAccess.get_file_as_string(MARKER_PATH)) == OS.get_process_id():
+		DirAccess.remove_absolute(MARKER_PATH)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_EXIT_TREE:
+		_end_session_marker()
+
+
+# Godot renames the last session's log to <name><timestamp>.log at startup, next to the
+# current one. The newest of those is the previous session's log.
+func _find_previous_log() -> String:
+	if not bool(ProjectSettings.get_setting("debug/file_logging/enable_file_logs", false)):
+		return ""
+	var path := str(ProjectSettings.get_setting("debug/file_logging/log_path", "user://logs/godot.log"))
+	var dir_path := path.get_base_dir()
+	var current := path.get_file()
+	var stem := current.get_basename()
+	var ext := current.get_extension()
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return ""
+	var best := ""
+	var best_time := -1
+	for file_name in dir.get_files():
+		if file_name == current or not file_name.begins_with(stem) or file_name.get_extension() != ext:
+			continue
+		var candidate := dir_path.path_join(file_name)
+		var modified := FileAccess.get_modified_time(candidate)
+		if modified > best_time:
+			best = candidate
+			best_time = modified
+	return best
 
 
 ## Adds a value that is sent with every report, e.g. set_context("level", "forest_3").
@@ -72,6 +153,10 @@ func report(extra: Dictionary = {}) -> void:
 		var log_bytes := _log_tail()
 		if not log_bytes.is_empty():
 			files.append(_file("godot.log", "text/plain", log_bytes))
+		if _crashed_last_session and not _previous_log.is_empty():
+			var previous := _tail(_previous_log)
+			if not previous.is_empty():
+				files.append(_file("godot-previous-session.log", "text/plain", previous))
 
 	var key := str(_setting("public_key", "")).strip_edges()
 	var error := "no public key set"
@@ -159,7 +244,10 @@ func _screenshot() -> PackedByteArray:
 func _log_tail() -> PackedByteArray:
 	if not bool(ProjectSettings.get_setting("debug/file_logging/enable_file_logs", false)):
 		return PackedByteArray()
-	var path := str(ProjectSettings.get_setting("debug/file_logging/log_path", "user://logs/godot.log"))
+	return _tail(str(ProjectSettings.get_setting("debug/file_logging/log_path", "user://logs/godot.log")))
+
+
+func _tail(path: String) -> PackedByteArray:
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
 		return PackedByteArray()
@@ -191,6 +279,10 @@ func _diagnostics(extra: Dictionary) -> Dictionary:
 		var size := DisplayServer.screen_get_size()
 		d["screen_size"] = "%dx%d" % [size.x, size.y]
 		d["gpu"] = RenderingServer.get_video_adapter_name()
+	if _crashed_last_session:
+		d["crash"] = "Previous session ended unexpectedly"
+		if _previous_log_time > 0:
+			d["crash_time"] = Time.get_datetime_string_from_unix_time(_previous_log_time) + "Z"
 	for source in [_context, extra]:
 		for k in source:
 			var key := _clean_key(str(k))

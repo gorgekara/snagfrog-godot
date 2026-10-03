@@ -11,6 +11,7 @@ const SETTINGS := [
 	["snagfrog/hotkey", "F9", TYPE_STRING],
 	["snagfrog/include_log", true, TYPE_BOOL],
 	["snagfrog/include_screenshot", true, TYPE_BOOL],
+	["snagfrog/detect_crashes", true, TYPE_BOOL],
 ]
 
 

@@ -28,6 +28,7 @@ untested.
 | `snagfrog/hotkey` | `F9` | Key that opens the report; empty disables it |
 | `snagfrog/include_log` | `true` | Attach the last 256 KB of the log file |
 | `snagfrog/include_screenshot` | `true` | Attach a screenshot |
+| `snagfrog/detect_crashes` | `true` | Notice when the last session ended unexpectedly |
 
 The log is only attached when file logging is on (**Debug → File Logging → Enable File
 Logging**).
@@ -54,10 +55,30 @@ Pressing the hotkey (F9 by default; a single key, modifiers like Ctrl or Shift a
 key), `report_failed` fires, then `report_opened` fires as the report page still opens with the diagnostics in the URL, just
 without the files.
 
+## After a crash
+
+The addon notices when the previous session did not exit cleanly: a crash, a freeze the player
+force-quit, or a power loss. Reports sent in the next session then also carry the previous
+session's log (file logging must be on) and are marked as a crash in your SnagFrog inbox.
+
+To ask the player right away, connect to the signal:
+
+```gdscript
+SnagFrog.crashed_last_session.connect(func():
+	# Show your own "The game closed unexpectedly. Send a report?" dialog, then:
+	SnagFrog.report())
+```
+
+`SnagFrog.has_crashed_last_session()` returns the same thing at any time. Nothing is sent on its
+own. Detection is off when the game runs from the editor (the stop button kills the game, which
+would look like a crash) and on web exports. Starting a second copy of the game while one is
+running also reads as an unexpected exit.
+
 ## What is sent
 
 - A screenshot of the game viewport (PNG, at most 1920 px on the long edge).
 - The last 256 KB of the Godot log file, if file logging is enabled.
+- After an unexpected exit, the last 256 KB of the previous session's log.
 - Game name and version, engine version, OS name and version, device model, CPU architecture,
   locale, renderer, GPU, screen size, and anything you add with `set_context` or `report(extra)`.
 
