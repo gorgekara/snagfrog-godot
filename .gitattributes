@@ -1,0 +1,8 @@
+# Keep the demo project out of downloaded archives (GitHub zips, Godot Asset Library):
+# users only need the addon.
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/main.gd export-ignore
+/main.gd.uid export-ignore
+/main.tscn export-ignore
+/project.godot export-ignore
